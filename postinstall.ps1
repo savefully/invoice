@@ -40,22 +40,24 @@ wmdb_CLIENTS =
 
 $menuString = @"
 
+0 - Exit
+1 - Full installation
 
-0 - Выйти
-1 > Полная пост-установка
-- 2 > NLS_LANG
-- 3 > Ярлыки GUI
-- 4 > tnsnames.ora
+Custom installation:
+2 - NLS_LANG
+3 - GUI Links
+4 - tnsnames.ora
 
-Введите номер нужного пункта
+Input:
 "@
+$oracleRegistryPath = "HKLM:\SOFTWARE\WOW6432Node\ORACLE"
 
 function EnsureAdmin {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
     $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
     if (-not $isAdmin) {
-        Write-Warning "Требуется перезапуск от имени администратора."
+        Write-Host "Run as Administrator"
         pause
         exit
     }
@@ -71,50 +73,82 @@ function ThrowIfPathDoNotExist {
 
 function AbortOrContinue {
     while ($true) {
-        $answer = Read-Host "1 - Прервать`n2 - Продолжить`nВведите значение"
+        Write-Host "1 - Abort`n2 - Continue`nInput:"
+        $answer = Read-Host ":"
         if ($answer -eq "1") {
-            throw "Прервано"
+            throw "Aborted"
         } elseif ($answer -eq "2") {
             break;
         }
     }
 }
 
+function GetOracleHomeRegistryKeys {
+    $basePath = "HKLM:\SOFTWARE\WOW6432Node\ORACLE"
+    if (-not (Test-Path $oracleRegistryPath)) {
+        throw "Path is not found: $oracleRegistryPath"
+        return @()
+    }
+
+    $oracleKeys = Get-ChildItem -Path $oracleRegistryPath -ErrorAction SilentlyContinue
+    $foundKeys = @()
+    $pattern = "^KEY_OraClient12Home\d+_32bit$"
+
+    foreach ($key in $oracleKeys) {
+        $keyName = $key.PSChildName
+        
+        if ($keyName -match $pattern) {
+            $foundKeys += $keyName
+        }
+    }
+    if ($foundKeys.length -eq 0) {
+        throw "No registry keys are found: $oracleRegistryPath\$pattern"
+    }
+    return foundKeys
+}
+
 function EditNLSLANGinRegistry {    
-    $registryPath = "HKLM:\SOFTWARE\WOW6432Node\ORACLE\KEY_OraClient12Home1_32bit"
+    $registryPath = $null;
     $valueName = "NLS_LANG"
     $newValue = "AMERICAN_AMERICA.CL8MSWIN1251"
     $defaultValue = "AMERICAN_AMERICA.WE8MSWIN1252"
-    Write-Host "Замена значения $valueName в реестре"
+    Write-Host "Handle $valueName in registry"
 
-    # Проверяем, что ключ есть
-    ThrowIfPathDoNotExist $registryPath "Не найден ключ реестра: $registryPath"
-    Write-Host "Путь в реестре существует: $registryPath"
-
-    # Первичное значение 
+    $oracleHomeRegistryKeys = GetOracleHomeRegistryKeys
+    Write-Host "Found oracle home keys: $oracleHomeRegistryKeys"
+    if ($oracleHomeRegistryKeys.length -eq 1) {
+        $registryPath = "$oracleRegistryPath\$($oracleHomeRegistryKeys[0])"
+    } else {
+        Write-Host "Input oracle home key index starting from 0:"
+        $index = Read-Host ":"
+        $index = [int]$index
+        $registryPath = "$oracleRegistryPath\$($oracleHomeRegistryKeys[$index])"
+    }
+     
     $initialValue = Get-ItemProperty -Path $registryPath -Name $valueName | Select-Object -ExpandProperty $valueName
     if ($initialValue -cne $defaultValue) {
-        Write-Warning "Неожиданное первичное значение $valueName - $initialValue"
+        Write-Warning "Unexpected initial value $valueName - $initialValue"
         AbortOrContinue
     }
-    Write-Host "Значение $valueName - $initialValue"
+    Write-Host "Initial value $valueName - $initialValue"
 
     # Устанавливаем значение
     Set-ItemProperty -Path $registryPath -Name $valueName -Value $newValue
-    Write-Host "Изменение значения на $newValue"
+    Write-Host "Change value: $newValue"
 
     # Читаем значение
     $readValue = Get-ItemProperty -Path $registryPath -Name $valueName | Select-Object -ExpandProperty $valueName
     if ($readValue -cne $newValue) {
-        Write-Warning "Прочитанное значение $valueName - $readValue - не совпадает с $newValue"
+        Write-Warning "Value that is read $valueName - $readValue - is not $newValue"
         AbortOrContinue
     }
-    Write-Host "Прочитанное значение: $readValue" 
+    Write-Host "Read value: $readValue" 
 }
 
 function CreateGUIshortcuts { 
-    Write-Host "Ярлыки GUI"
-    $guiDriveLetter = Read-Host "Введите букву диска, на котором расположен GUI"
+    Write-Host "GUI shortcuts"
+    Write-Host 'Input the letter of the disk partition where "GUI_Invoice" is located:'
+    $guiDriveLetter = Read-Host ":"
     $exePath1 = $guiDriveLetter + ":\GUI_Invoice\GUI_Volna\INV_Clients.exe"
     $exePath2 = $guiDriveLetter + ":\GUI_Invoice\GUI_WIN\INV_Clients_WIN.exe"
 
@@ -126,59 +160,61 @@ function CreateGUIshortcuts {
         $Shortcut = $WshShell.CreateShortcut($desktopPath)
         $Shortcut.TargetPath = $exePath
         $Shortcut.WorkingDirectory = [System.IO.Path]::GetDirectoryName($exePath)
-        $Shortcut.WindowStyle = 1  # Открывать в обычном окне
-        $Shortcut.Description = "Ярлык для " + $name
+        $Shortcut.WindowStyle = 1
+        $Shortcut.Description = $name
         $Shortcut.Save()
     }
 
-    ThrowIfPathDoNotExist $exePath1 "Не найден файл: $exePath1"
-    Write-Host "Файл обнаружен: $exePath1"
-    ThrowIfPathDoNotExist $exePath2 "Не найден файл: $exePath2"
-    Write-Host "Файл обнаружен: $exePath2"
+    ThrowIfPathDoNotExist $exePath1 "File is not found: $exePath1"
+    Write-Host "File is found: $exePath1"
+    ThrowIfPathDoNotExist $exePath2 "File is not found: $exePath2"
+    Write-Host "File is found: $exePath2"
 
     CreateShortcut "INV_Clients" $exePath1
-    Write-Host "Создын ярлык для $exePath1" 
+    Write-Host "Shortcut has been created for $exePath1" 
     CreateShortcut "INV_Clients_WIN" $exePath2
-    Write-Host "Создын ярлык для $exePath2" 
+    Write-Host "Shortcut has been created for $exePath2" 
 }
 
 function WriteTNSnamesFile {
-    Write-Host "Запись tnsnames.ora"
-    $appDriveLetter = Read-Host "Введите букву диска, на котором расположен app"
+    Write-Host "Writing tnsnames.ora"
+    Write-Host 'Input the letter of the disk partition where "app" is located:'
+    $appDriveLetter = Read-Host ":"
     $appClientPath = $appDriveLetter + ":\app\client\"
     $targetPathPart = "\product\12.2.0\client_1\network\admin\tnsnames.ora"
 
     # Проверяем существование app/client
-    ThrowIfPathDoNotExist $appClientPath "Не найден путь: $appClientPath"
-    Write-Host "Путь обнаружен: $appClientPath"
+    ThrowIfPathDoNotExist $appClientPath "Path is not found: $appClientPath"
+    Write-Host "Path is found: $appClientPath"
 
     # Проверяем папки пользователей в app/client
     $clientFolders = Get-ChildItem -Path $appClientPath -Directory
     $clientFolderNames = $clientFolders.Name
-    Write-Host "Обнаруженные папки: $clientFolderNames"
+    Write-Host "Located folders: $clientFolderNames"
     $user = ""
     if ($clientFolderNames.Length -eq 0) {
-        throw "Нет папок пользователей: $appClientPath" 
+        throw "No user-folders: $appClientPath" 
     } elseif ($clientFolderNames -is [string]) {
         $user = $clientFolderNames
     } else { # Если не 0 и не строка, значит массив с несколькими значениями
-        $index = Read-Host "Введите индекс нужной папки (начиная с 0)"
+        Write-Host "Input folder index starting from 0:"
+        $index = Read-Host ":"
         $index = [int]$index
         $user = $clientFolderNames[$index]
     }
-    Write-Host "Выбранный пользовтель - $user"
+    Write-Host "Selected user - $user"
 
     # Пишем файл
     $targetPath = $appClientPath + $user +  $targetPathPart
     Set-Content -Path $targetPath -Value $tnsnamesValue
-    Write-Host "Файл записан: $targetPath"
+    Write-Host "File is written: $targetPath"
 }
 
 function Attempt {
     param([ScriptBlock]$Callback)
     try { $Callback.Invoke() }
     catch {
-        if ($_ -eq "Прервано") {
+        if ($_ -eq "Aborted") {
             Write-Host $_
             pause
             return
@@ -190,14 +226,15 @@ function Attempt {
 }
 
 function Case {
-    $case = Read-Host $menuString
+    Write-Host $menuString
+    $case = Read-Host ":"
     if ($case -eq "0") {
         $global:work = $false;
     } elseif ($case -eq "1") {
         EditNLSLANGinRegistry
         CreateGUIshortcuts
         WriteTNSnamesFile
-        Write-Host "Успех" -ForegroundColor Green
+        Write-Host "Success." -ForegroundColor Green
     } elseif ($case -eq "2") {
         EditNLSLANGinRegistry
     } elseif ($case -eq "3") {
@@ -205,7 +242,7 @@ function Case {
     } elseif ($case -eq "4") {
         WriteTNSnamesFile
     } else {
-        Write-Host "Некорректный вариант"
+        Write-Host "No such option: $case"
     }
 }
 
